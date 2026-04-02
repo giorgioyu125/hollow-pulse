@@ -1,147 +1,238 @@
 #include "raylib.h"
-#include <math.h>
+
+#include "raymath.h"
+
+#define GRAVITY         32.0f
+#define MAX_SPEED       20.0f
+#define CROUCH_SPEED     5.0f
+#define JUMP_FORCE      12.0f
+#define MAX_ACCEL      150.0f
+
+#define FRICTION         0.86f
+
+#define AIR_DRAG         0.98f
+
+#define CONTROL         15.0f
+#define CROUCH_HEIGHT    0.0f
+#define STAND_HEIGHT     1.0f
+#define BOTTOM_HEIGHT    0.5f
+
+#define NORMALIZE_INPUT  0
+
+typedef struct {
+    Vector3 position;
+    Vector3 velocity;
+    Vector3 dir;
+    bool isGrounded;
+} Body;
+
+static Vector2 sensitivity = { 0.001f, 0.001f };
+
+static Body player = { 0 };
+static Vector2 lookRotation = { 0 };
+static float headTimer = 0.0f;
+static float walkLerp = 0.0f;
+static float headLerp = STAND_HEIGHT;
+static Vector2 lean = { 0 };
+
+static void DrawLevel(void){
+    const int floorExtent = 25;
+    const float tileSize = 5.0f;
+    const Color tileColor1 = (Color){ 150, 200, 200, 255 };
+
+    for (int y = -floorExtent; y < floorExtent; y++){
+        for (int x = -floorExtent; x < floorExtent; x++){
+            if ((y & 1) && (x & 1)){
+                DrawPlane((Vector3){ x*tileSize, 0.0f, y*tileSize}, (Vector2){ tileSize, tileSize }, tileColor1);
+            }
+            else if (!(y & 1) && !(x & 1)){
+                DrawPlane((Vector3){ x*tileSize, 0.0f, y*tileSize}, (Vector2){ tileSize, tileSize }, LIGHTGRAY);
+            }
+        }
+    }
+
+    const Vector3 towerSize = (Vector3){ 16.0f, 32.0f, 16.0f };
+    const Color towerColor = (Color){ 150, 200, 200, 255 };
+
+    Vector3 towerPos = (Vector3){ 16.0f, 16.0f, 16.0f };
+    DrawCubeV(towerPos, towerSize, towerColor);
+    DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
+
+    towerPos.x *= -1;
+    DrawCubeV(towerPos, towerSize, towerColor);
+    DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
+
+    towerPos.z *= -1;
+    DrawCubeV(towerPos, towerSize, towerColor);
+    DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
+
+    towerPos.x *= -1;
+    DrawCubeV(towerPos, towerSize, towerColor);
+    DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
+
+    DrawSphere((Vector3){ 300.0f, 300.0f, 0.0f }, 100.0f, (Color){ 255, 0, 0, 255 });
+}
+
+void UpdateCameraFPS(Camera *camera){
+    const Vector3 up = (Vector3){ 0.0f, 1.0f, 0.0f };
+    const Vector3 targetOffset = (Vector3){ 0.0f, 0.0f, -1.0f };
+
+    Vector3 yaw = Vector3RotateByAxisAngle(targetOffset, up, lookRotation.x);
+
+    float maxAngleUp = Vector3Angle(up, yaw);
+    maxAngleUp -= 0.001f; 
+
+    if ( -(lookRotation.y) > maxAngleUp) { lookRotation.y = -maxAngleUp; }
+
+    float maxAngleDown = Vector3Angle(Vector3Negate(up), yaw);
+    maxAngleDown *= -1.0f; 
+
+    maxAngleDown += 0.001f; 
+
+    if ( -(lookRotation.y) < maxAngleDown) { lookRotation.y = -maxAngleDown; }
+
+    Vector3 right = Vector3Normalize(Vector3CrossProduct(yaw, up));
+
+    float pitchAngle = -lookRotation.y - lean.y;
+    pitchAngle = Clamp(pitchAngle, -PI/2 + 0.0001f, PI/2 - 0.0001f); 
+
+    Vector3 pitch = Vector3RotateByAxisAngle(yaw, right, pitchAngle);
+
+    float headSin = sinf(headTimer*PI);
+    float headCos = cosf(headTimer*PI);
+    const float stepRotation = 0.01f;
+    camera->up = Vector3RotateByAxisAngle(up, pitch, headSin*stepRotation + lean.x);
+
+    const float bobSide = 0.1f;
+    const float bobUp = 0.15f;
+    Vector3 bobbing = Vector3Scale(right, headSin*bobSide);
+    bobbing.y = fabsf(headCos*bobUp);
+
+    camera->position = Vector3Add(camera->position, Vector3Scale(bobbing, walkLerp));
+    camera->target = Vector3Add(camera->position, pitch);
+}
+
+void UpdateBody(Body *body, float rot, char side, char forward, bool jumpPressed, bool crouchHold){
+    Vector2 input = (Vector2){ (float)side, (float)-forward };
+
+#if defined(NORMALIZE_INPUT)
+    if ((side != 0) && (forward != 0)) input = Vector2Normalize(input);
+#endif
+
+    float delta = GetFrameTime();
+
+    if (!body->isGrounded) body->velocity.y -= GRAVITY*delta;
+
+    if (body->isGrounded && jumpPressed){
+        body->velocity.y = JUMP_FORCE;
+        body->isGrounded = false;
+
+    }
+
+    Vector3 front = (Vector3){ sinf(rot), 0.f, cosf(rot) };
+    Vector3 right = (Vector3){ cosf(-rot), 0.f, sinf(-rot) };
+
+    Vector3 desiredDir = (Vector3){ input.x*right.x + input.y*front.x, 0.0f, input.x*right.z + input.y*front.z, };
+    body->dir = Vector3Lerp(body->dir, desiredDir, CONTROL*delta);
+
+    float decel = (body->isGrounded ? FRICTION : AIR_DRAG);
+    Vector3 hvel = (Vector3){ body->velocity.x*decel, 0.0f, body->velocity.z*decel };
+
+    float hvelLength = Vector3Length(hvel); 
+
+    if (hvelLength < (MAX_SPEED*0.01f)) hvel = (Vector3){ 0 };
+
+    float speed = Vector3DotProduct(hvel, body->dir);
+
+    float maxSpeed = (crouchHold? CROUCH_SPEED : MAX_SPEED);
+    float accel = Clamp(maxSpeed - speed, 0.f, MAX_ACCEL*delta);
+    hvel.x += body->dir.x*accel;
+    hvel.z += body->dir.z*accel;
+
+    body->velocity.x = hvel.x;
+    body->velocity.z = hvel.z;
+
+    body->position.x += body->velocity.x*delta;
+    body->position.y += body->velocity.y*delta;
+    body->position.z += body->velocity.z*delta;
+
+    if (body->position.y <= 0.0f){
+        body->position.y = 0.0f;
+        body->velocity.y = 0.0f;
+        body->isGrounded = true; 
+
+    }
+}
 
 int main(void){
-    const int screenWidth = 900;
-    const int screenHeight = 600;
+    const int screenWidth = 800;
+    const int screenHeight = 450;
 
-    InitWindow(screenWidth, screenHeight, "Walking Capsule");
+    InitWindow(screenWidth, screenHeight, "raylib [core] example - 3d camera fps");
 
-    // Camera ---
-    Camera3D camera = { 0 };
-    camera.position = (Vector3){ 0.0f, 8.0f, 10.0f };
-    camera.target   = (Vector3){ 0.0f, 1.0f, 0.0f };
-    camera.up       = (Vector3){ 0.0f, 1.0f, 0.0f };
-    camera.fovy     = 45.0f;
+    Camera camera = { 0 };
+    camera.fovy = 60.0f;
     camera.projection = CAMERA_PERSPECTIVE;
+    camera.position = (Vector3){
+        player.position.x,
+        player.position.y + (BOTTOM_HEIGHT + headLerp),
+        player.position.z,
+    };
 
-    // --- Character state ---
-    Vector3 position = { 0.0f, 0.0f, 0.0f };
-    float speed      = 5.0f;
-    float facing     = 0.0f;
-    float walkTimer  = 0.0f;
-    bool  isMoving   = false;
-
-    // --- Capsule dimensions ---
-    float bodyRadius = 0.35f;
-    float bodyHalf   = 0.5f;
-    float legRadius  = 0.1f;
-    float legLength  = 0.6f;
-    float legSpread  = 0.2f;
-
+    UpdateCameraFPS(&camera);
+    DisableCursor();
     SetTargetFPS(60);
 
     while (!WindowShouldClose()){
-        float dt = GetFrameTime();
+        Vector2 mouseDelta = GetMouseDelta();
+        lookRotation.x -= mouseDelta.x*sensitivity.x;
+        lookRotation.y += mouseDelta.y*sensitivity.y;
 
-        // --- Input ---
-        Vector3 moveDir = { 0 };
-        if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))    moveDir.z -= 1.0f;
-        if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))   moveDir.z += 1.0f;
-        if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))   moveDir.x -= 1.0f;
-        if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT))  moveDir.x += 1.0f;
+        char sideway = (IsKeyDown(KEY_D) - IsKeyDown(KEY_A));
+        char forward = (IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
+        bool crouching = IsKeyDown(KEY_LEFT_CONTROL);
+        UpdateBody(&player, lookRotation.x, sideway, forward, IsKeyPressed(KEY_SPACE), crouching);
 
-        isMoving = (moveDir.x != 0.0f || moveDir.z != 0.0f);
+        float delta = GetFrameTime();
+        headLerp = Lerp(headLerp, (crouching ? CROUCH_HEIGHT : STAND_HEIGHT), 20.0f*delta);
+        camera.position = (Vector3){
+            player.position.x,
+            player.position.y + (BOTTOM_HEIGHT + headLerp),
+            player.position.z,
+        };
 
-        if (isMoving){
-            float len = sqrtf(moveDir.x * moveDir.x + moveDir.z * moveDir.z);
-            moveDir.x /= len;
-            moveDir.z /= len;
-
-            position.x += moveDir.x * speed * dt;
-            position.z += moveDir.z * speed * dt;
-
-            facing = atan2f(moveDir.x, moveDir.z);
-            walkTimer += dt * 12.0f;
+        if (player.isGrounded && ((forward != 0) || (sideway != 0))){
+            headTimer += delta*3.0f;
+            walkLerp = Lerp(walkLerp, 1.0f, 10.0f*delta);
+            camera.fovy = Lerp(camera.fovy, 55.0f, 5.0f*delta);
         } else {
-            walkTimer = 0.0f;
+            walkLerp = Lerp(walkLerp, 0.0f, 10.0f*delta);
+            camera.fovy = Lerp(camera.fovy, 60.0f, 5.0f*delta);
         }
 
-        float bob = isMoving ? fabsf(sinf(walkTimer)) * 0.08f : 0.0f;
+        lean.x = Lerp(lean.x, sideway*0.02f, 10.0f*delta);
+        lean.y = Lerp(lean.y, forward*0.015f, 10.0f*delta);
 
-        float legSwing = isMoving ? sinf(walkTimer) * 0.7f : 0.0f;  // radians
+        UpdateCameraFPS(&camera);
 
-        camera.target   = (Vector3){ position.x, 1.2f, position.z };
-        camera.position = (Vector3){ position.x, 6.0f, position.z + 8.0f };
-
-        float sinF = sinf(facing);
-        float cosF = cosf(facing);
-        float rightX =  cosF;
-        float rightZ = -sinF;
-        float fwdX = sinF;
-        float fwdZ = cosF;
-
-        // --- Body position ---
-        float bodyBaseY = legLength + 0.05f + bob;
-        Vector3 bodyBot = { position.x, bodyBaseY + bodyRadius, position.z };
-        Vector3 bodyTop = { position.x, bodyBaseY + bodyRadius + bodyHalf * 2.0f, position.z };
-
-        // --- Eye ---
-        float eyeY = bodyTop.y;
-        Vector3 eyePos = {
-            position.x + fwdX * bodyRadius * 0.9f,
-            eyeY,
-            position.z + fwdZ * bodyRadius * 0.9f
-        };
-
-        // --- Leg positions (swing forward/back along facing direction) ---
-        float lLegTopX = position.x - rightX * legSpread;
-        float lLegTopZ = position.z - rightZ * legSpread;
-        float lLegTopY = bodyBaseY;
-
-        float lSwing = legSwing;
-        Vector3 leftLegTop = { lLegTopX, lLegTopY, lLegTopZ };
-        Vector3 leftLegBot = {
-            lLegTopX + sinf(facing + lSwing) * legLength * 0.3f,
-            0.0f + legRadius,
-            lLegTopZ + cosf(facing + lSwing) * legLength * 0.3f
-        };
-
-        float rLegTopX = position.x + rightX * legSpread;
-        float rLegTopZ = position.z + rightZ * legSpread;
-        float rLegTopY = bodyBaseY;
-
-        float rSwing = -legSwing;
-        Vector3 rightLegTop = { rLegTopX, rLegTopY, rLegTopZ };
-        Vector3 rightLegBot = {
-            rLegTopX + sinf(facing + rSwing) * legLength * 0.3f,
-            0.0f + legRadius,
-            rLegTopZ + cosf(facing + rSwing) * legLength * 0.3f
-        };
-
-        // --- Draw ---
         BeginDrawing();
-        ClearBackground((Color){ 200, 220, 240, 255 });
+            ClearBackground(RAYWHITE);
 
-        BeginMode3D(camera);
-            DrawPlane((Vector3){ 0, 0, 0 }, (Vector2){ 60, 60 }, (Color){ 120, 180, 100, 255 });
-            DrawGrid(60, 1.0f);
+            BeginMode3D(camera);
+                DrawLevel();
+            EndMode3D();
 
-            DrawCylinder(position, 0.5f, 0.5f, 0.01f, 16, (Color){ 0, 0, 0, 60 });
+            DrawRectangle(5, 5, 330, 75, Fade(SKYBLUE, 0.5f));
+            DrawRectangleLines(5, 5, 330, 75, BLUE);
 
-            DrawCapsule(leftLegTop,  leftLegBot,  legRadius, 8, 4, DARKBLUE);
-            DrawCapsule(rightLegTop, rightLegBot, legRadius, 8, 4, DARKBLUE);
-
-            DrawCapsule(bodyBot, bodyTop, bodyRadius, 16, 8, BLUE);
-            DrawCapsuleWires(bodyBot, bodyTop, bodyRadius, 8, 4, (Color){ 0, 0, 120, 255 });
-
-            DrawSphere(eyePos, 0.09f, WHITE);
-            Vector3 pupilPos = {
-                eyePos.x + fwdX * 0.06f,
-                eyePos.y,
-                eyePos.z + fwdZ * 0.06f
-            };
-            DrawSphere(pupilPos, 0.05f, BLACK);
-
-        EndMode3D();
-
-        DrawText("WASD / Arrow Keys to walk", 10, 10, 20, DARKGRAY);
-        DrawText(TextFormat("Pos: %.1f, %.1f", position.x, position.z), 10, 35, 18, GRAY);
-        DrawFPS(screenWidth - 100, 10);
-
+            DrawText("Camera controls:", 15, 15, 10, BLACK);
+            DrawText("- Move keys: W, A, S, D, Space, Left-Ctrl", 15, 30, 10, BLACK);
+            DrawText("- Look around: arrow keys or mouse", 15, 45, 10, BLACK);
+            DrawText(TextFormat("- Velocity Len: (%06.3f)", Vector2Length((Vector2){ player.velocity.x, player.velocity.z })), 15, 60, 10, BLACK);
         EndDrawing();
-    }
 
+    }
     CloseWindow();
     return 0;
 }
+

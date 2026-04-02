@@ -20,7 +20,7 @@ and children of the man he erased and destroys them, because he justify this mom
 as "erasing" some echoes of some monsters turning the infiltration into an irreparable moral crime, and 
 making this the first of many psychological ghosts for Vane.
 
-Debate: Standing over the bodies, Vane’s HUD fully reboots, dropping the "anomaly" filter to reveal the 
+**Debate:** Standing over the bodies, Vane’s HUD fully reboots, dropping the "anomaly" filter to reveal the 
 human corpses of Symon's family. Suddenly, his radio crackles. Imperial Command demands a sitrep, having 
 detected a massive spike in Vane's stress biomarkers and an unsanctioned weapon discharge. Command asks: 
 "Executioner, report. Did you encounter hostiles?"
